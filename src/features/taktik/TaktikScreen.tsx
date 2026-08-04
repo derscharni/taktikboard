@@ -19,6 +19,16 @@ import {
   oppDefenseTokens,
 } from './presets'
 import type { NewBoardKind } from './presets'
+import { LIBRARY, LIBRARY_CATEGORIES, buildLibraryBoard } from './library'
+import {
+  boardFromFile,
+  boardFromLocationHash,
+  boardToPngBlob,
+  boardToShareUrl,
+  clearShareHash,
+  downloadBoardFile,
+} from '../../lib/share'
+import type { LibraryCategory, LibraryEntry } from './library'
 import {
   ensureSteps,
   positionInStep,
@@ -69,6 +79,8 @@ const IC_PALETTE = 'M12 3a9 9 0 1 0 0 18h1.5a2 2 0 0 0 0-4H12a1.5 1.5 0 0 1 0-3h
 const IC_CUBE = 'M12 3 20 7.5v9L12 21l-8-4.5v-9Z M12 12 20 7.5 M12 12v9 M12 12 4 7.5'
 const IC_EXPAND = 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5'
 const IC_CLOSE = 'M6 6l12 12M18 6 6 18'
+const IC_SHARE = 'M12 15V4M12 4 8.5 7.5M12 4l3.5 3.5M5 12v6.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V12'
+const IC_BOOK = 'M5 4.5h6a2.5 2.5 0 0 1 2.5 2.5v12.5a2 2 0 0 0-2-2H5Z M19 4.5h-5.5A2.5 2.5 0 0 0 11 7 M19 4.5v13h-6.5'
 
 function Chip({
   pressed,
@@ -360,7 +372,13 @@ export default function TaktikScreen() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [trayOpen, setTrayOpen] = useState(false)
   const [ghost, setGhostState] = useState<{ kind: MaterialKind; x: number; y: number } | null>(null)
-  const [sheetView, setSheetView] = useState<'boards' | 'new' | 'figur' | 'farben' | null>(null)
+  const [sheetView, setSheetView] = useState<'boards' | 'new' | 'figur' | 'farben' | 'bibliothek' | 'teilen' | null>(null)
+  const [libQuery, setLibQuery] = useState('')
+  const [libCat, setLibCat] = useState<LibraryCategory | null>(null)
+  const [shareMsg, setShareMsg] = useState<string | null>(null)
+  const [shareBusy, setShareBusy] = useState(false)
+  const [importOffer, setImportOffer] = useState<TacticsBoard | null>(null)
+  const importFileRef = useRef<HTMLInputElement>(null)
   const [presetDesc, setPresetDesc] = useState<string | null>(null)
   const [deleteArmed, setDeleteArmed] = useState(false)
   const [present, setPresent] = useState(false)
@@ -417,6 +435,9 @@ export default function TaktikScreen() {
       skipPersistRef.current = true
       setBoard(ensureSteps(b))
       setCurStep(0)
+      // Per Link geteilten Zug erkennen (…#zug=…)
+      const shared = await boardFromLocationHash()
+      if (alive && shared) setImportOffer(shared)
     })()
     return () => {
       alive = false
@@ -797,6 +818,19 @@ export default function TaktikScreen() {
     })()
   }
 
+  const loadLibraryEntry = (entry: LibraryEntry) => {
+    void (async () => {
+      const nb = buildLibraryBoard(entry)
+      await db.boards.put(nb)
+      skipPersistRef.current = true
+      setBoard(nb)
+      setCurStep(0)
+      resetTransient()
+      setPresetDesc(entry.description)
+      setSheetView(null)
+    })()
+  }
+
   const renameBoard = (id: string, title: string) => {
     void db.boards.update(id, { title, updatedAt: new Date().toISOString() })
     if (boardRef.current?.id === id) {
@@ -923,6 +957,82 @@ export default function TaktikScreen() {
   const orbitEnd = (e: ReactPointerEvent<HTMLDivElement>) => {
     orbitPtrs.current.delete(e.pointerId)
     if (orbitPtrs.current.size < 2) pinchStart.current = null
+  }
+
+
+  /* ---- Teilen ---- */
+
+  const acceptImport = (b: TacticsBoard) => {
+    void (async () => {
+      await db.boards.put(b)
+      skipPersistRef.current = true
+      setBoard(b)
+      setCurStep(0)
+      resetTransient()
+      setPresetDesc(null)
+      setImportOffer(null)
+      setSheetView(null)
+      clearShareHash()
+    })()
+  }
+
+  const shareLink = async () => {
+    const b = boardRef.current
+    if (!b) return
+    setShareBusy(true)
+    setShareMsg(null)
+    try {
+      const url = await boardToShareUrl(b)
+      if (navigator.share) {
+        await navigator.share({ title: b.title || 'Spielzug', url })
+        setShareMsg('Geteilt. Der komplette Zug steckt im Link — kein Konto nötig.')
+      } else {
+        await navigator.clipboard.writeText(url)
+        setShareMsg('Link kopiert — einfach in WhatsApp & Co. einfügen.')
+      }
+    } catch {
+      setShareMsg(null)
+    } finally {
+      setShareBusy(false)
+    }
+  }
+
+  const shareImage = async () => {
+    const b = boardRef.current
+    const svg = svgRef.current
+    if (!b || !svg) return
+    setShareBusy(true)
+    setShareMsg(null)
+    try {
+      const blob = await boardToPngBlob(svg, fieldColors)
+      if (!blob) {
+        setShareMsg('Bild konnte nicht erzeugt werden.')
+        return
+      }
+      const file = new File([blob], `${b.title || 'spielzug'}.png`, { type: 'image/png' })
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: b.title || 'Spielzug' })
+        setShareMsg('Bild geteilt.')
+      } else {
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(blob)
+        a.download = file.name
+        a.click()
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+        setShareMsg('Bild heruntergeladen.')
+      }
+    } catch {
+      setShareMsg(null)
+    } finally {
+      setShareBusy(false)
+    }
+  }
+
+  const onImportFile = async (file: File | undefined) => {
+    if (!file) return
+    const b = await boardFromFile(file)
+    if (b) setImportOffer(b)
+    else setShareMsg('Datei konnte nicht gelesen werden — ist es eine .taktik.json?')
   }
 
   /* ---- Render ---- */
@@ -1145,6 +1255,12 @@ export default function TaktikScreen() {
             <Chip onClick={() => setSheetView('figur')}>
               <Icon d={IC_PLUS} /> Figur
             </Chip>
+            <Chip onClick={() => setSheetView('bibliothek')}>
+              <Icon d={IC_BOOK} /> Bibliothek
+            </Chip>
+            <Chip onClick={() => { setShareMsg(null); setSheetView('teilen') }}>
+              <Icon d={IC_SHARE} /> Teilen
+            </Chip>
             <Chip onClick={() => setSheetView('farben')}>
               <Icon d={IC_PALETTE} /> Farben
             </Chip>
@@ -1282,6 +1398,135 @@ export default function TaktikScreen() {
           <p className="px-1 text-[11.5px] text-muted">
             Entfernen: Figur auf dem Feld antippen → „Vom Feld entfernen“.
           </p>
+        </div>
+      </Sheet>
+      <Sheet open={sheetView === 'teilen'} onClose={() => setSheetView(null)} title="Zug teilen">
+        <div className="flex flex-col gap-2">
+          <Button onClick={() => void shareLink()} disabled={shareBusy}>
+            <Icon d={IC_SHARE} className="h-4 w-4" /> Link teilen (WhatsApp & Co.)
+          </Button>
+          <p className="-mt-1 px-1 text-[11.5px] text-muted">
+            Der komplette Spielzug steckt im Link — wer ihn öffnet, kann ihn direkt
+            übernehmen und weiterbearbeiten.
+          </p>
+          <Button variant="secondary" onClick={() => void shareImage()} disabled={shareBusy}>
+            Als Bild teilen / speichern
+          </Button>
+          <div className="mt-1 flex gap-2">
+            <Button
+              variant="secondary"
+              className="flex-1"
+              onClick={() => boardRef.current && downloadBoardFile(boardRef.current)}
+            >
+              Datei sichern
+            </Button>
+            <Button variant="secondary" className="flex-1" onClick={() => importFileRef.current?.click()}>
+              Datei importieren …
+            </Button>
+          </div>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              e.target.value = ''
+              void onImportFile(f)
+            }}
+          />
+          {shareMsg && <p className="px-1 text-[12px] font-semibold text-ok">{shareMsg}</p>}
+        </div>
+      </Sheet>
+      <Sheet open={importOffer !== null} onClose={() => { setImportOffer(null); clearShareHash() }} title="Geteilten Zug übernehmen?">
+        {importOffer && (
+          <div className="flex flex-col gap-3">
+            <p className="text-[14px] text-ink">
+              <span className="font-display font-bold uppercase tracking-wide">{importOffer.title || 'Ohne Titel'}</span>
+              <span className="text-muted">
+                {' '}— {importOffer.steps.length} {importOffer.steps.length === 1 ? 'Schritt' : 'Schritte'},{' '}
+                {importOffer.tokens.length} Figuren
+              </span>
+            </p>
+            <div className="flex gap-2">
+              <Button className="flex-1" onClick={() => acceptImport(importOffer)}>
+                Übernehmen
+              </Button>
+              <Button
+                variant="secondary"
+                className="flex-1"
+                onClick={() => { setImportOffer(null); clearShareHash() }}
+              >
+                Verwerfen
+              </Button>
+            </div>
+            <p className="text-[11.5px] text-muted">
+              Wird als eigener Zug unter „Meine Züge" gespeichert — dein aktueller Zug bleibt erhalten.
+            </p>
+          </div>
+        )}
+      </Sheet>
+      <Sheet open={sheetView === 'bibliothek'} onClose={() => setSheetView(null)} title="Bibliothek">
+        <div className="flex flex-col gap-2">
+          <input
+            value={libQuery}
+            onChange={(e) => setLibQuery(e.target.value)}
+            placeholder="Suchen … z.B. Kreuzung, 6:0, Gegenstoß"
+            aria-label="Bibliothek durchsuchen"
+            className="min-h-11 w-full rounded-xl border border-line bg-card-2 px-3 text-[14px] text-ink outline-none placeholder:text-muted focus:border-accent"
+          />
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Nach Kategorie filtern">
+            <button
+              aria-pressed={libCat === null}
+              onClick={() => setLibCat(null)}
+              className={`min-h-11 rounded-full px-3 text-[12px] font-semibold ${
+                libCat === null ? 'bg-accent text-btn-ink' : 'border border-line text-muted'
+              }`}
+            >
+              Alle
+            </button>
+            {LIBRARY_CATEGORIES.map((c) => (
+              <button
+                key={c}
+                aria-pressed={libCat === c}
+                onClick={() => setLibCat(libCat === c ? null : c)}
+                className={`min-h-11 rounded-full px-3 text-[12px] font-semibold ${
+                  libCat === c ? 'bg-accent text-btn-ink' : 'border border-line text-muted'
+                }`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+          {LIBRARY.filter(
+            (e) =>
+              (libCat === null || e.kategorie === libCat) &&
+              (libQuery.trim() === '' ||
+                `${e.title} ${e.description}`.toLowerCase().includes(libQuery.trim().toLowerCase())),
+          ).map((e) => (
+            <button
+              key={e.id}
+              onClick={() => loadLibraryEntry(e)}
+              className="rounded-xl border border-line bg-card-2 px-3 py-3 text-left active:border-accent"
+            >
+              <p className="flex items-center gap-2 font-display text-[14px] font-bold uppercase tracking-wide text-ink">
+                {e.title}
+                <Badge tone="accent">{e.kategorie}</Badge>
+                {e.field === 'full' && <Badge tone="neutral">Ganzes Feld</Badge>}
+              </p>
+              <p className="mt-0.5 text-[12px] leading-snug text-muted">{e.description}</p>
+            </button>
+          ))}
+          {LIBRARY.filter(
+            (e) =>
+              (libCat === null || e.kategorie === libCat) &&
+              (libQuery.trim() === '' ||
+                `${e.title} ${e.description}`.toLowerCase().includes(libQuery.trim().toLowerCase())),
+          ).length === 0 && (
+            <p className="py-2 text-center text-[13px] text-muted">
+              Nichts gefunden — Suchbegriff oder Filter anpassen.
+            </p>
+          )}
         </div>
       </Sheet>
       <Sheet open={sheetView === 'farben'} onClose={() => setSheetView(null)} title="Feldfarben">

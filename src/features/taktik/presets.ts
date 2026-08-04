@@ -40,23 +40,23 @@ export const MATERIAL_LABEL: Record<MaterialKind, string> = {
   'ball-extra': 'Bälle',
 }
 
-function tok(kind: BoardToken['kind'], label: string, x: number, y: number): BoardToken {
+export function tok(kind: BoardToken['kind'], label: string, x: number, y: number): BoardToken {
   return { id: uid(), kind, label: label || undefined, x, y }
 }
 
-function mat(kind: MaterialKind, x: number, y: number): BoardMaterial {
+export function mat(kind: MaterialKind, x: number, y: number): BoardMaterial {
   return { id: uid(), kind, x, y }
 }
 
 /** Grundstellung (Schritt 0) aus den aktuellen Figuren-Positionen. */
-function baseStep(tokens: BoardToken[]): StepPositions {
+export function baseStep(tokens: BoardToken[]): StepPositions {
   const s: StepPositions = {}
   for (const t of tokens) s[t.id] = { x: t.x, y: t.y }
   return s
 }
 
 /** Folgeschritt: wie `prev`, mit gezielten Bewegungen einzelner Figuren. */
-function nextStep(
+export function nextStep(
   prev: StepPositions,
   moves: [BoardToken, number, number][],
 ): StepPositions {
