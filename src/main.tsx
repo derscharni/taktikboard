@@ -6,7 +6,11 @@ import { applyClubColors } from './lib/clubColors'
 import { db } from './lib/db'
 
 async function boot() {
-  const settings = await db.settings.get('app')
+  let settings = await db.settings.get('app')
+  if (!settings) {
+    settings = { id: 'app', theme: 'auto' }
+    await db.settings.put(settings)
+  }
 
   // Theme-Einstellung anwenden (auto = OS-Präferenz, sonst erzwungen)
   if (settings && settings.theme !== 'auto') {

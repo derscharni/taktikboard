@@ -1,5 +1,11 @@
 import { uid } from '../../lib/db'
-import type { BoardMaterial, BoardToken, MaterialKind, TacticsBoard } from '../../lib/types'
+import type {
+  BoardMaterial,
+  BoardToken,
+  MaterialKind,
+  StepPositions,
+  TacticsBoard,
+} from '../../lib/types'
 
 /**
  * Taktikboard-Grunddaten: Feldmaße, Aufstellungen und ladbare Presets.
@@ -7,6 +13,10 @@ import type { BoardMaterial, BoardToken, MaterialKind, TacticsBoard } from '../.
  * Koordinaten sind normiert (0..1): x quer (20 m), y längs (40 m) —
  * das Feld steht hochkant, das Angriffs-Tor liegt oben (y = 0),
  * die Angriffshälfte ist y 0..0.5 (Halbfeld-Ansicht).
+ *
+ * Spielzüge sind Schrittfolgen: steps[0] ist die Grundstellung, jeder
+ * weitere Schritt eine Ziel-Stellung — die Bewegung dazwischen ergänzt
+ * die App beim Abspielen automatisch.
  */
 
 export const FIELD_W = 20
@@ -30,9 +40,6 @@ export const MATERIAL_LABEL: Record<MaterialKind, string> = {
   'ball-extra': 'Bälle',
 }
 
-type Pt = { x: number; y: number }
-const pt = (x: number, y: number): Pt => ({ x, y })
-
 function tok(kind: BoardToken['kind'], label: string, x: number, y: number): BoardToken {
   return { id: uid(), kind, label: label || undefined, x, y }
 }
@@ -41,12 +48,21 @@ function mat(kind: MaterialKind, x: number, y: number): BoardMaterial {
   return { id: uid(), kind, x, y }
 }
 
-/** Weg setzen — Figur startet am ersten Wegpunkt. */
-function withPath(t: BoardToken, path: Pt[]): BoardToken {
-  t.path = path
-  t.x = path[0].x
-  t.y = path[0].y
-  return t
+/** Grundstellung (Schritt 0) aus den aktuellen Figuren-Positionen. */
+function baseStep(tokens: BoardToken[]): StepPositions {
+  const s: StepPositions = {}
+  for (const t of tokens) s[t.id] = { x: t.x, y: t.y }
+  return s
+}
+
+/** Folgeschritt: wie `prev`, mit gezielten Bewegungen einzelner Figuren. */
+function nextStep(
+  prev: StepPositions,
+  moves: [BoardToken, number, number][],
+): StepPositions {
+  const s: StepPositions = { ...prev }
+  for (const [t, x, y] of moves) s[t.id] = { x, y }
+  return s
 }
 
 /** Angriffs-Grundaufstellung (gegen das obere Tor). */
@@ -120,7 +136,8 @@ export function makeNewBoard(kind: NewBoardKind): TacticsBoard {
     updatedAt: new Date().toISOString(),
   }
   if (kind === 'angriff') {
-    return { ...base, title: 'Angriff 3:2:1', tokens: [...ownAttackTokens('half'), ballToken()] }
+    const tokens = [...ownAttackTokens('half'), ballToken()]
+    return { ...base, title: 'Angriff 3:2:1', tokens, steps: [baseStep(tokens)] }
   }
   if (kind === 'abwehr') {
     const labels = ['LA', 'RL', 'KM', 'RM', 'RR', 'RA']
@@ -129,9 +146,11 @@ export function makeNewBoard(kind: NewBoardKind): TacticsBoard {
     const opp = ATTACK.filter(([label]) => label !== 'TW').map(([, x, y], i) =>
       tok('opp', String(i + 1), x, y),
     )
-    return { ...base, title: '6:0 Abwehr', tokens: [...own, ...opp, ballToken(0.5, 0.39)] }
+    const tokens = [...own, ...opp, ballToken(0.5, 0.39)]
+    return { ...base, title: '6:0 Abwehr', tokens, steps: [baseStep(tokens)] }
   }
-  return { ...base, title: 'Neuer Spielzug', tokens: [ballToken(0.5, 0.3)] }
+  const tokens = [ballToken(0.5, 0.3)]
+  return { ...base, title: 'Neuer Spielzug', tokens, steps: [baseStep(tokens)] }
 }
 
 /* ---------- Presets ---------- */
@@ -144,7 +163,7 @@ export interface TaktikPreset {
   /** Ein Satz Beschreibung. */
   description: string
   field: 'full' | 'half'
-  build: () => Pick<TacticsBoard, 'tokens' | 'materials'>
+  build: () => Pick<TacticsBoard, 'tokens' | 'materials' | 'steps'>
 }
 
 export const PRESETS: TaktikPreset[] = [
@@ -153,26 +172,21 @@ export const PRESETS: TaktikPreset[] = [
     chip: 'Kreuzung RM/RL',
     title: 'Kreuzung RM/RL mit Einläufer',
     description:
-      'RM und RL kreuzen im Rückraum, KM läuft als Einläuferin an den Kreis — der Ball wandert per Pass von RM auf RL.',
+      'Schritt 1: Grundstellung. Schritt 2: RM und RL kreuzen, KM läuft an den Kreis, der Ball wandert per Pass auf RL.',
     field: 'half',
     build: () => {
       const own = ownAttackTokens('half')
       const find = (label: string) => own.find((t) => t.label === label)!
-      withPath(find('RM'), [
-        pt(0.5, 0.37),
-        pt(0.405, 0.335),
-        pt(0.335, 0.2875),
-        pt(0.31, 0.2425),
+      const ball = ballToken()
+      const tokens = [...own, ...oppDefenseTokens(), ball]
+      const s0 = baseStep(tokens)
+      const s1 = nextStep(s0, [
+        [find('RM'), 0.31, 0.2425],
+        [find('RL'), 0.53, 0.245],
+        [find('KM'), 0.33, 0.17],
+        [ball, 0.52, 0.25],
       ])
-      withPath(find('RL'), [
-        pt(0.28, 0.325),
-        pt(0.395, 0.35),
-        pt(0.495, 0.3075),
-        pt(0.53, 0.245),
-      ])
-      withPath(find('KM'), [pt(0.5, 0.27), pt(0.44, 0.225), pt(0.375, 0.19), pt(0.33, 0.17)])
-      const ball = withPath(ballToken(), [pt(0.45, 0.3975), pt(0.41, 0.335), pt(0.52, 0.25)])
-      return { tokens: [...own, ...oppDefenseTokens(), ball], materials: [] }
+      return { tokens, materials: [], steps: [s0, s1] }
     },
   },
   {
@@ -180,20 +194,23 @@ export const PRESETS: TaktikPreset[] = [
     chip: 'Training: Anspiel Kreis',
     title: 'Training: Anspiel Kreis unter Druck',
     description:
-      'KM fordert am Kreis, RM spielt gegen den Druck von RL und RR an — die Hütchen markieren die Druckzonen.',
+      'Schritt 1: Aufbau. Schritt 2: KM löst sich am Kreis, RM spielt gegen den Druck an — die Hütchen markieren die Druckzonen.',
     field: 'half',
     build: () => {
-      const rm = withPath(tok('own', 'RM', 0, 0), [
-        pt(0.5, 0.385),
-        pt(0.51, 0.34),
-        pt(0.48, 0.305),
-      ])
-      const km = withPath(tok('own', 'KM', 0, 0), [pt(0.37, 0.235), pt(0.45, 0.2), pt(0.56, 0.17)])
+      const rm = tok('own', 'RM', 0.5, 0.385)
+      const km = tok('own', 'KM', 0.37, 0.235)
       const rl = tok('own', 'RL', 0.35, 0.26)
       const rr = tok('own', 'RR', 0.66, 0.26)
-      const ball = withPath(ballToken(), [pt(0.47, 0.3675), pt(0.47, 0.29), pt(0.52, 0.185)])
+      const ball = ballToken(0.47, 0.3675)
+      const tokens = [rm, km, rl, rr, ball]
+      const s0 = baseStep(tokens)
+      const s1 = nextStep(s0, [
+        [rm, 0.48, 0.305],
+        [km, 0.56, 0.17],
+        [ball, 0.52, 0.185],
+      ])
       return {
-        tokens: [rm, km, rl, rr, ball],
+        tokens,
         materials: [
           mat('huetchen', 0.31, 0.285),
           mat('huetchen', 0.69, 0.285),
@@ -201,6 +218,7 @@ export const PRESETS: TaktikPreset[] = [
           mat('huetchen', 0.65, 0.36),
           mat('ball-extra', 0.88, 0.46),
         ],
+        steps: [s0, s1],
       }
     },
   },
@@ -215,6 +233,7 @@ export function buildPresetBoard(preset: TaktikPreset): TacticsBoard {
     field: preset.field,
     tokens: built.tokens,
     materials: built.materials,
+    steps: built.steps,
     updatedAt: new Date().toISOString(),
   }
 }
