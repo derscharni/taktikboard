@@ -1217,7 +1217,7 @@ export default function TaktikScreen() {
             onChange={(e) => setBoard((b) => (b ? { ...b, title: e.target.value } : b))}
             aria-label="Name des Spielzugs — antippen zum Umbenennen"
             placeholder="Name des Spielzugs"
-            className="min-w-0 flex-1 border-b border-dashed border-muted/60 bg-transparent pb-1 font-display text-[18px] font-bold uppercase tracking-wide text-ink outline-none focus:border-accent"
+            className="min-h-11 min-w-0 flex-1 border-b border-dashed border-muted/60 bg-transparent font-display text-[18px] font-bold uppercase tracking-wide text-ink outline-none focus:border-accent"
           />
           <button
             onClick={() => setSheetView('boards')}
