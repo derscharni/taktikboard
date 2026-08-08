@@ -140,6 +140,7 @@ function Standee({
   shadowScale = 0.92,
   lift = 0,
   tilt = 0,
+  height,
   children,
 }: {
   left: string
@@ -156,6 +157,8 @@ function Standee({
   lift?: number
   /** Rest-Neigung: 0 = exakt zur Kamera, >0 lässt etwas Draufsicht zu (wirkt plastischer). */
   tilt?: number
+  /** Höhe des Aufstellers (Standard: quadratisch = size). */
+  height?: number
   children: ReactNode
 }) {
   const transition = animate ? 'transform 320ms ease, left 320ms ease, top 320ms ease' : undefined
@@ -185,7 +188,7 @@ function Standee({
           left,
           top,
           width: size,
-          height: size,
+          height: height ?? size,
           transformOrigin: '50% 100%',
           transform: `translate(-50%, -100%) translateZ(${lift}px) rotateZ(${-rz}deg) rotateX(${-(rx - tilt)}deg)`,
           transition,
@@ -273,42 +276,86 @@ function Layer3D({
       {tokens.map((t) => {
         const isBall = t.kind === 'ball'
         const isOpp = t.kind === 'opp'
-        const size = isBall ? ballPx : chipPx
         const p = planePct(t.x, t.y, vbH)
+        if (isBall) {
+          const size = ballPx
+          return (
+            <Standee
+              key={t.id}
+              {...p}
+              size={size}
+              rx={rx}
+              rz={rz}
+              animate={animate}
+              lift={size * 0.22}
+              shadowScale={0.8}
+              chipRef={register(t.id, 'chip')}
+              shadowRef={register(t.id, 'shadow')}
+            >
+              <div
+                style={{
+                  width: size,
+                  height: size,
+                  borderRadius: '50%',
+                  backgroundColor: 'var(--club-acc)',
+                  backgroundImage:
+                    'radial-gradient(circle at 33% 28%, #ffe9a3 0%, var(--club-acc) 52%, color-mix(in srgb, var(--club-acc) 55%, #6b4d00) 100%)',
+                  border: `1px solid color-mix(in srgb, var(--club-acc-ink) 45%, transparent)`,
+                  boxShadow: '0 2px 6px rgba(6,9,14,0.45)',
+                }}
+              />
+            </Standee>
+          )
+        }
+        // Map-Pin: runder Kopf mit Kürzel, Spitze zeigt auf die Position
+        const size = chipPx
+        const tail = size * 0.34
+        const pinH = size + tail
+        const tailColor = isOpp ? '#272c35' : 'var(--club-700)'
         return (
           <Standee
             key={t.id}
             {...p}
             size={size}
+            height={pinH}
             rx={rx}
             rz={rz}
             animate={animate}
-            lift={isBall ? size * 0.22 : size * 0.16}
-            tilt={isBall ? 0 : 10}
+            lift={size * 0.12}
+            shadowScale={0.55}
             chipRef={register(t.id, 'chip')}
             shadowRef={register(t.id, 'shadow')}
           >
-            <div
-              style={{
-                width: size,
-                height: size,
-                borderRadius: '50%',
-                display: 'grid',
-                placeItems: 'center',
-                fontFamily: 'var(--font-display)',
-                fontWeight: 800,
-                fontSize: size * 0.36,
-                lineHeight: 1,
-                ...(isBall
-                  ? {
-                      // Kugel-Look: Glanzpunkt oben links, Abdunklung zum Rand
-                      backgroundColor: 'var(--club-acc)',
-                      backgroundImage:
-                        'radial-gradient(circle at 33% 28%, #ffe9a3 0%, var(--club-acc) 52%, color-mix(in srgb, var(--club-acc) 55%, #6b4d00) 100%)',
-                      border: `${Math.max(1, border * 0.4)}px solid color-mix(in srgb, var(--club-acc-ink) 45%, transparent)`,
-                      boxShadow: '0 2px 6px rgba(6,9,14,0.45)',
-                    }
-                  : isOpp
+            <div style={{ position: 'relative', width: size, height: pinH }}>
+              {/* Spitze */}
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '50%',
+                  top: size * 0.82,
+                  transform: 'translateX(-50%)',
+                  width: 0,
+                  height: 0,
+                  borderLeft: `${size * 0.18}px solid transparent`,
+                  borderRight: `${size * 0.18}px solid transparent`,
+                  borderTop: `${tail + size * 0.18}px solid ${tailColor}`,
+                  filter: 'drop-shadow(0 1.5px 2px rgba(6,9,14,0.35))',
+                }}
+              />
+              {/* Kopf */}
+              <div
+                style={{
+                  position: 'absolute',
+                  inset: `0 0 auto 0`,
+                  height: size,
+                  borderRadius: '50%',
+                  display: 'grid',
+                  placeItems: 'center',
+                  fontFamily: 'var(--font-display)',
+                  fontWeight: 800,
+                  fontSize: size * 0.36,
+                  lineHeight: 1,
+                  ...(isOpp
                     ? {
                         backgroundColor: '#272c35',
                         backgroundImage:
@@ -327,9 +374,10 @@ function Layer3D({
                         boxShadow:
                           'inset 0 1.5px 2px rgba(255,255,255,0.9), inset 0 -2.5px 5px rgba(20,40,80,0.28), 0 2.5px 8px rgba(6,9,14,0.45)',
                       }),
-              }}
-            >
-              {!isBall && t.label}
+                }}
+              >
+                {t.label}
+              </div>
             </div>
           </Standee>
         )
