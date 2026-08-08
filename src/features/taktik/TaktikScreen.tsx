@@ -5,7 +5,14 @@ import { db, uid } from '../../lib/db'
 import type { FieldColors, MaterialKind, StepPositions, TacticsBoard } from '../../lib/types'
 import { DEFAULT_FIELD_COLORS, FIELD_COLOR_PRESETS } from '../../lib/types'
 import { Badge, Button, Card, Segmented, Sheet } from '../../components/ui'
-import Court, { MatGlyph } from './Court'
+import Court, {
+  MatGlyph,
+  VIEW_H_FULL,
+  VIEW_H_HALF,
+  VIEW_PAD_X,
+  VIEW_PAD_Y,
+  VIEW_W,
+} from './Court'
 import type { CourtArrow } from './Court'
 import {
   FIELD_H,
@@ -45,7 +52,7 @@ import { clampNorm, svgPointNorm, useBoardDrag } from './useBoardDrag'
  */
 
 const HINT_DEFAULT =
-  'Stell die Figuren für Schritt 1 auf. „+“ legt den nächsten Schritt an — verschieb dann die Figuren an ihre Ziele. Beim Abspielen ergänzt das Board die Bewegung dazwischen automatisch.'
+  'Stell die Figuren für Schritt 1 auf. „+“ legt den nächsten Schritt an — verschieb dann die Figuren an ihre Ziele. Figuren, Material & mehr findest du unter „Werkzeuge“.'
 const HINT_3D =
   '3D-Ansicht: Ziehen dreht das Feld, Kneifen oder Scrollen zoomt. Zum Bearbeiten zurück auf „2D“.'
 
@@ -70,11 +77,12 @@ function Icon({ d, className = 'h-3.5 w-3.5' }: { d: string; className?: string 
 }
 
 const IC_SHIELD = 'M12 3l7 2.5V11c0 4.5-3 7.6-7 9.5-4-1.9-7-5-7-9.5V5.5Z'
+const IC_TOOLS = 'M4 6.5h9M17 6.5h3M13 4v5M4 12h3M11 12h9M7 9.5v5M4 17.5h11M19 17.5h1M15 15v5'
+const IC_CHEV = 'M9.5 6l6 6-6 6'
 const IC_PLAY = 'M8 5.5v13l10-6.5Z'
 const IC_PLUS = 'M12 5v14M5 12h14'
 const IC_TRASH = 'M5 7h14M9.5 7V4.5h5V7M7 7l1 13h8l1-13'
 const IC_BOOKMARK = 'M7 4h10v16l-5-3.5L7 20Z'
-const IC_CONE = 'M12 4l4 9H8Z M5.5 16.5h13'
 const IC_PALETTE = 'M12 3a9 9 0 1 0 0 18h1.5a2 2 0 0 0 0-4H12a1.5 1.5 0 0 1 0-3h6.5A3.5 3.5 0 0 0 22 10.5 8.5 8.5 0 0 0 12 3ZM7.5 10.5h.01M11 7h.01M15.5 8.5h.01'
 const IC_CUBE = 'M12 3 20 7.5v9L12 21l-8-4.5v-9Z M12 12 20 7.5 M12 12v9 M12 12 4 7.5'
 const IC_EXPAND = 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5'
@@ -106,6 +114,174 @@ function Chip({
     >
       {children}
     </button>
+  )
+}
+
+/* ---------- 3D-Aufsteller: Figuren & Material stehen im Diorama aufrecht ---------- */
+
+/** Normierte Position → Prozent auf der Feld-Ebene (inkl. ViewBox-Rand). */
+function planePct(x: number, y: number, vbH: number): { left: string; top: string } {
+  return {
+    left: `${(((x * FIELD_W + VIEW_PAD_X) / VIEW_W) * 100).toFixed(3)}%`,
+    top: `${(((y * FIELD_H + VIEW_PAD_Y) / vbH) * 100).toFixed(3)}%`,
+  }
+}
+
+function Standee({
+  left,
+  top,
+  size,
+  rx,
+  rz,
+  animate,
+  chipRef,
+  shadowRef,
+  shadowScale = 0.92,
+  children,
+}: {
+  left: string
+  top: string
+  size: number
+  rx: number
+  rz: number
+  animate: boolean
+  chipRef?: (el: HTMLDivElement | null) => void
+  shadowRef?: (el: HTMLDivElement | null) => void
+  /** Schattenbreite relativ zur Figurbreite. */
+  shadowScale?: number
+  children: ReactNode
+}) {
+  const transition = animate ? 'transform 320ms ease, left 320ms ease, top 320ms ease' : undefined
+  return (
+    <>
+      {/* Bodenschatten bleibt flach auf der Ebene liegen */}
+      <div
+        ref={shadowRef}
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          left,
+          top,
+          width: size * shadowScale,
+          height: size * 0.3,
+          transform: 'translate(-50%, -50%)',
+          borderRadius: '50%',
+          background: 'radial-gradient(closest-side, rgba(6,9,14,0.42), rgba(6,9,14,0) 78%)',
+          transition,
+        }}
+      />
+      {/* Aufsteller: Gegenrotation zur Feldneigung — steht senkrecht zur Kamera */}
+      <div
+        ref={chipRef}
+        style={{
+          position: 'absolute',
+          left,
+          top,
+          width: size,
+          height: size,
+          transformOrigin: '50% 100%',
+          transform: `translate(-50%, -100%) rotateZ(${-rz}deg) rotateX(${-rx}deg)`,
+          transition,
+        }}
+      >
+        {children}
+      </div>
+    </>
+  )
+}
+
+function Layer3D({
+  tokens,
+  materials,
+  field,
+  rx,
+  rz,
+  animate,
+  chipPx,
+  ballPx,
+  register,
+}: {
+  tokens: TacticsBoard['tokens']
+  materials: TacticsBoard['materials']
+  field: 'full' | 'half'
+  rx: number
+  rz: number
+  animate: boolean
+  chipPx: number
+  ballPx: number
+  register: (id: string, part: 'chip' | 'shadow') => (el: HTMLDivElement | null) => void
+}) {
+  const vbH = field === 'half' ? VIEW_H_HALF : VIEW_H_FULL
+  const border = Math.max(2, chipPx * 0.085)
+  const matPx = chipPx * 1.15
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-0"
+      style={{ transformStyle: 'preserve-3d' }}
+    >
+      {materials.map((m) => {
+        const p = planePct(m.x, m.y, vbH)
+        return (
+          <Standee key={m.id} {...p} size={matPx} rx={rx} rz={rz} animate={animate} shadowScale={0.72}>
+            <svg viewBox="-2 -2 4 4" width={matPx} height={matPx} style={{ display: 'block' }}>
+              <MatGlyph kind={m.kind} />
+            </svg>
+          </Standee>
+        )
+      })}
+      {tokens.map((t) => {
+        const isBall = t.kind === 'ball'
+        const isOpp = t.kind === 'opp'
+        const size = isBall ? ballPx : chipPx
+        const p = planePct(t.x, t.y, vbH)
+        return (
+          <Standee
+            key={t.id}
+            {...p}
+            size={size}
+            rx={rx}
+            rz={rz}
+            animate={animate}
+            chipRef={register(t.id, 'chip')}
+            shadowRef={register(t.id, 'shadow')}
+          >
+            <div
+              style={{
+                width: size,
+                height: size,
+                borderRadius: '50%',
+                display: 'grid',
+                placeItems: 'center',
+                fontFamily: 'var(--font-display)',
+                fontWeight: 800,
+                fontSize: size * 0.36,
+                lineHeight: 1,
+                boxShadow: '0 2px 7px rgba(6,9,14,0.4)',
+                ...(isBall
+                  ? {
+                      background: 'var(--club-acc)',
+                      border: `${Math.max(1.5, border * 0.6)}px solid color-mix(in srgb, var(--club-acc-ink) 55%, transparent)`,
+                    }
+                  : isOpp
+                    ? {
+                        background: '#272c35',
+                        border: `${border * 0.75}px solid rgba(255,255,255,0.65)`,
+                        color: '#f0f2f5',
+                      }
+                    : {
+                        background: '#ffffff',
+                        border: `${border}px solid var(--club-700)`,
+                        color: 'var(--club-700)',
+                      }),
+              }}
+            >
+              {!isBall && t.label}
+            </div>
+          </Standee>
+        )
+      })}
+    </div>
   )
 }
 
@@ -370,9 +546,9 @@ export default function TaktikScreen() {
   const [playing, setPlaying] = useState(false)
   const [stepMode, setStepMode] = useState(0) // reduzierte Bewegung: manueller Fortschritt
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [trayOpen, setTrayOpen] = useState(false)
+  const [toolsOpen, setToolsOpen] = useState(false)
   const [ghost, setGhostState] = useState<{ kind: MaterialKind; x: number; y: number } | null>(null)
-  const [sheetView, setSheetView] = useState<'boards' | 'new' | 'figur' | 'farben' | 'bibliothek' | 'teilen' | null>(null)
+  const [sheetView, setSheetView] = useState<'boards' | 'new' | 'farben' | 'bibliothek' | 'teilen' | null>(null)
   const [libQuery, setLibQuery] = useState('')
   const [libCat, setLibCat] = useState<LibraryCategory | null>(null)
   const [shareMsg, setShareMsg] = useState<string | null>(null)
@@ -402,6 +578,21 @@ export default function TaktikScreen() {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const rafRef = useRef<number | null>(null)
   const tokenEls = useRef(new Map<string, SVGGElement>())
+  const token3dEls = useRef(new Map<string, { chip?: HTMLDivElement | null; shadow?: HTMLDivElement | null }>())
+
+  /* Board-Kachel messen, damit die 3D-Ebene exakt das ViewBox-Seitenverhältnis bekommt */
+  const [boardBox, setBoardBox] = useState<HTMLDivElement | null>(null)
+  const [boxSize, setBoxSize] = useState({ w: 0, h: 0 })
+  useEffect(() => {
+    if (!boardBox) return
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0].contentRect
+      setBoxSize((s) => (s.w === r.width && s.h === r.height ? s : { w: r.width, h: r.height }))
+    })
+    ro.observe(boardBox)
+    return () => ro.disconnect()
+  }, [boardBox])
+
   const skipPersistRef = useRef(true)
   const pendingPersistRef = useRef(false)
   const ghostRef = useRef<typeof ghost>(null)
@@ -478,10 +669,36 @@ export default function TaktikScreen() {
     [],
   )
 
+  const register3d = useCallback(
+    (id: string, part: 'chip' | 'shadow') => (el: HTMLDivElement | null) => {
+      const m = token3dEls.current
+      const next = { ...(m.get(id) ?? {}), [part]: el }
+      if (!next.chip && !next.shadow) m.delete(id)
+      else m.set(id, next)
+    },
+    [],
+  )
+
   const setTokenTransform = useCallback((id: string, x: number, y: number) => {
     tokenEls.current
       .get(id)
       ?.setAttribute('transform', `translate(${(x * FIELD_W).toFixed(2)} ${(y * FIELD_H).toFixed(2)})`)
+    const t3 = token3dEls.current.get(id)
+    if (t3?.chip || t3?.shadow) {
+      const vbH = (boardRef.current?.field ?? 'half') === 'half' ? VIEW_H_HALF : VIEW_H_FULL
+      const left = `${(((x * FIELD_W + VIEW_PAD_X) / VIEW_W) * 100).toFixed(3)}%`
+      const top = `${(((y * FIELD_H + VIEW_PAD_Y) / vbH) * 100).toFixed(3)}%`
+      if (t3.chip) {
+        t3.chip.style.left = left
+        t3.chip.style.top = top
+        t3.chip.style.transition = 'none'
+      }
+      if (t3.shadow) {
+        t3.shadow.style.left = left
+        t3.shadow.style.top = top
+        t3.shadow.style.transition = 'none'
+      }
+    }
   }, [])
 
   const stopPlay = useCallback(() => {
@@ -708,6 +925,7 @@ export default function TaktikScreen() {
 
   const toggleDefense = () => {
     stopPlay()
+    setToolsOpen(false)
     setBoard((b) => {
       if (!b) return b
       if (b.tokens.some((t) => t.kind === 'opp')) {
@@ -757,7 +975,7 @@ export default function TaktikScreen() {
 
   /** Figur ergänzen — landet in der Grundstellung (Schritt 1) und gilt fortan. */
   const addFigure = (kind: 'own' | 'opp' | 'ball') => {
-    setSheetView(null)
+    setToolsOpen(false)
     setBoard((b) => {
       if (!b) return b
       if (kind === 'ball' && b.tokens.some((t) => t.kind === 'ball')) return b
@@ -888,6 +1106,7 @@ export default function TaktikScreen() {
     const svg = svgRef.current
     if (!d || e.pointerId !== d.pointerId || !svg) return
     if (Math.abs(e.clientX - d.startClientX) + Math.abs(e.clientY - d.startClientY) > 6) {
+      if (!d.moved) setToolsOpen(false) // Seitenleiste weg, damit das Feld frei ist
       d.moved = true
     }
     if (!d.moved) return
@@ -905,6 +1124,7 @@ export default function TaktikScreen() {
     const g = ghostRef.current
     setGhost(null)
     if (e.type === 'pointercancel') return
+    setToolsOpen(false)
     if (g) {
       addMaterial(g.kind, g.x, g.y)
     } else if (!d.moved) {
@@ -1004,7 +1224,10 @@ export default function TaktikScreen() {
     setShareBusy(true)
     setShareMsg(null)
     try {
-      const blob = await boardToPngBlob(svg, fieldColors)
+      // In der 3D-Ansicht sind die SVG-Figuren versteckt — fürs Bild wieder einblenden
+      const clone = svg.cloneNode(true) as SVGSVGElement
+      clone.querySelectorAll<SVGGElement>('[data-hide3d]').forEach((g) => g.removeAttribute('style'))
+      const blob = await boardToPngBlob(clone, fieldColors)
       if (!blob) {
         setShareMsg('Bild konnte nicht erzeugt werden.')
         return
@@ -1069,8 +1292,18 @@ export default function TaktikScreen() {
     '--court-lines': fieldColors.lines,
   } as CSSProperties
 
+  // Feld-Ebene exakt im ViewBox-Seitenverhältnis — nötig, damit die
+  // 3D-Aufsteller (HTML-Overlay) deckungsgleich auf dem SVG-Feld stehen.
+  const vbH = board.field === 'half' ? VIEW_H_HALF : VIEW_H_FULL
+  const planeW = boxSize.w > 0 ? Math.min(boxSize.w, (boxSize.h * VIEW_W) / vbH) : 0
+  const planeH = planeW > 0 ? (planeW * vbH) / VIEW_W : 0
+  const chipPx = planeW * (2.24 / VIEW_W)
+  const ballPx = planeW * (1.3 / VIEW_W)
+  const orbitActive = orbitPtrs.current.size > 0
+
   const boardArea = (
     <div
+      ref={setBoardBox}
       className={`relative overflow-hidden rounded-2xl shadow-card ${present ? 'flex-1' : ''}`}
       style={{
         ...courtVars,
@@ -1078,21 +1311,27 @@ export default function TaktikScreen() {
         ...(present
           ? {}
           : {
-              height: trayOpen ? 'calc(100dvh - 428px)' : 'calc(100dvh - 356px)',
+              height: 'calc(100dvh - 356px)',
               minHeight: 300,
-              maxHeight: 700,
+              maxHeight: 720,
             }),
       }}
     >
       {/* Perspektiv-Bühne fürs Diorama */}
-      <div className="h-full w-full" style={{ perspective: view3d ? '1100px' : undefined }}>
+      <div
+        className="flex h-full w-full items-center justify-center"
+        style={{ perspective: view3d ? '1100px' : undefined }}
+      >
         <div
-          className="h-full w-full"
+          className="relative"
           style={{
+            width: planeW > 0 ? planeW : '100%',
+            height: planeH > 0 ? planeH : '100%',
             transform: view3d
               ? `scale(${orbit.zoom}) rotateX(${orbit.rx}deg) rotateZ(${orbit.rz}deg)`
               : undefined,
-            transition: orbitPtrs.current.size > 0 ? undefined : 'transform 320ms ease',
+            transformStyle: view3d ? 'preserve-3d' : undefined,
+            transition: orbitActive ? undefined : 'transform 320ms ease',
           }}
         >
           <Court
@@ -1104,8 +1343,22 @@ export default function TaktikScreen() {
             ghost={ghost}
             svgRef={svgRef}
             registerTokenEl={registerTokenEl}
+            hideFigures={view3d}
             {...dragHandlers}
           />
+          {view3d && planeW > 0 && (
+            <Layer3D
+              tokens={board.tokens}
+              materials={board.materials}
+              field={board.field}
+              rx={orbit.rx}
+              rz={orbit.rz}
+              animate={!orbitActive}
+              chipPx={chipPx}
+              ballPx={ballPx}
+              register={register3d}
+            />
+          )}
         </div>
       </div>
       {/* Orbit-Fläche über dem Feld (nur 3D) */}
@@ -1186,7 +1439,7 @@ export default function TaktikScreen() {
               else setDeleteArmed(true)
             }}
             onBlur={() => setDeleteArmed(false)}
-            className={`inline-flex min-h-11 flex-none items-center gap-1 rounded-full px-3 text-[12px] font-semibold ${
+            className={`inline-flex min-h-11 min-w-11 flex-none items-center justify-center gap-1 rounded-full px-3 text-[12px] font-semibold ${
               deleteArmed ? 'bg-crit text-white' : 'border border-line text-muted'
             }`}
           >
@@ -1229,7 +1482,7 @@ export default function TaktikScreen() {
         </div>
       )}
 
-      {/* Werkzeuge */}
+      {/* Werkzeugleiste: Feldwahl + 3D links, Werkzeuge-Panel rechts */}
       {!present && (
         <div className="mt-2 flex items-center gap-2">
           <div className="w-30 flex-none">
@@ -1242,57 +1495,19 @@ export default function TaktikScreen() {
               onChange={setField}
             />
           </div>
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5">
-            <Chip pressed={view3d} onClick={() => setView3d((v) => !v)} ariaLabel="3D-Diorama-Ansicht umschalten">
-              <Icon d={IC_CUBE} /> {view3d ? '2D' : '3D'}
-            </Chip>
-            <Chip pressed={hasOpp} onClick={toggleDefense}>
-              <Icon d={IC_SHIELD} /> Abwehr
-            </Chip>
-            <Chip pressed={trayOpen} onClick={() => setTrayOpen((v) => !v)}>
-              <Icon d={IC_CONE} /> Material
-            </Chip>
-            <Chip onClick={() => setSheetView('figur')}>
-              <Icon d={IC_PLUS} /> Figur
-            </Chip>
-            <Chip onClick={() => setSheetView('bibliothek')}>
-              <Icon d={IC_BOOK} /> Bibliothek
-            </Chip>
-            <Chip onClick={() => { setShareMsg(null); setSheetView('teilen') }}>
-              <Icon d={IC_SHARE} /> Teilen
-            </Chip>
-            <Chip onClick={() => setSheetView('farben')}>
-              <Icon d={IC_PALETTE} /> Farben
-            </Chip>
-            <Chip onClick={() => setSheetView('new')}>
-              <Icon d={IC_PLUS} /> Neuer Zug
-            </Chip>
-          </div>
-        </div>
-      )}
-
-      {/* Material-Ablage (aufs Feld ziehen) */}
-      {trayOpen && !present && (
-        <div
-          className="mt-2 flex items-stretch gap-1.5 overflow-x-auto py-0.5"
-          aria-label="Trainingsmaterial — aufs Feld ziehen oder antippen zum Platzieren"
-        >
-          {MATERIAL_KINDS.map((k) => (
-            <button
-              key={k}
-              onPointerDown={matPointerDown(k)}
-              onPointerMove={matPointerMove}
-              onPointerUp={matPointerEnd}
-              onPointerCancel={matPointerEnd}
-              style={{ touchAction: 'none' }}
-              className="flex min-h-[60px] min-w-16 flex-none flex-col items-center justify-center gap-1 rounded-xl border border-line bg-card px-2 py-1.5 text-[10px] font-semibold text-muted active:border-accent"
-            >
-              <svg viewBox="-2 -2 4 4" className="h-6 w-6" aria-hidden="true">
-                <MatGlyph kind={k} />
-              </svg>
-              {MATERIAL_LABEL[k]}
-            </button>
-          ))}
+          <Chip pressed={view3d} onClick={() => setView3d((v) => !v)} ariaLabel="3D-Diorama-Ansicht umschalten">
+            <Icon d={IC_CUBE} /> {view3d ? '2D' : '3D'}
+          </Chip>
+          <div className="min-w-0 flex-1" />
+          <button
+            onClick={() => setToolsOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={toolsOpen}
+            className="inline-flex min-h-11 flex-none items-center gap-1.5 rounded-xl bg-accent-soft px-3 font-display text-[12px] font-bold uppercase tracking-wide text-accent active:opacity-80"
+          >
+            <Icon d={IC_TOOLS} className="h-4 w-4" />
+            Werkzeuge
+          </button>
         </div>
       )}
 
@@ -1344,6 +1559,132 @@ export default function TaktikScreen() {
         </>
       )}
 
+      {/* Werkzeuge-Seitenleiste (Overlay von rechts) */}
+      <button
+        aria-label="Werkzeuge schließen"
+        tabIndex={toolsOpen ? 0 : -1}
+        onClick={() => setToolsOpen(false)}
+        className={`fixed inset-0 z-40 bg-black/35 transition-opacity duration-200 ${
+          toolsOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+        }`}
+      />
+      <aside
+        role="dialog"
+        aria-label="Werkzeuge"
+        inert={!toolsOpen}
+        className={`fixed bottom-0 right-0 top-0 z-50 flex w-[300px] max-w-[86vw] flex-col gap-4 overflow-y-auto border-l border-line bg-bg p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] shadow-card transition-transform duration-200 ${
+          toolsOpen ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      >
+        <div className="flex items-center justify-between">
+          <h2 className="font-display text-[15px] font-bold uppercase tracking-wide text-ink">Werkzeuge</h2>
+          <button
+            aria-label="Werkzeuge schließen"
+            onClick={() => setToolsOpen(false)}
+            className="grid h-11 w-11 place-items-center rounded-xl text-muted active:bg-card-2"
+          >
+            <Icon d={IC_CLOSE} className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div>
+          <p className="mb-1.5 px-1 font-display text-[11px] font-bold uppercase tracking-wide text-muted">
+            Figuren aufs Feld
+          </p>
+          <div className="grid grid-cols-3 gap-1.5">
+            <button
+              onClick={() => addFigure('own')}
+              className="flex flex-col items-center gap-1 rounded-xl border border-line bg-card px-1 py-2.5 active:border-accent"
+            >
+              <svg viewBox="0 0 24 24" className="h-7 w-7" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" fill="#ffffff" stroke="var(--club-700)" strokeWidth="2.4" />
+              </svg>
+              <span className="text-[11px] font-semibold text-ink">Spielerin</span>
+            </button>
+            <button
+              onClick={() => addFigure('opp')}
+              className="flex flex-col items-center gap-1 rounded-xl border border-line bg-card px-1 py-2.5 active:border-accent"
+            >
+              <svg viewBox="0 0 24 24" className="h-7 w-7" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" fill="#272c35" stroke="rgba(255,255,255,0.7)" strokeWidth="1.6" />
+              </svg>
+              <span className="text-[11px] font-semibold text-ink">Abwehr</span>
+            </button>
+            <button
+              onClick={() => addFigure('ball')}
+              disabled={hasBall}
+              className="flex flex-col items-center gap-1 rounded-xl border border-line bg-card px-1 py-2.5 active:border-accent disabled:opacity-40"
+            >
+              <svg viewBox="0 0 24 24" className="h-7 w-7" aria-hidden="true">
+                <circle cx="12" cy="12" r="7.5" fill="var(--club-acc)" stroke="var(--club-acc-ink)" strokeWidth="1" />
+              </svg>
+              <span className="text-[11px] font-semibold text-ink">Ball</span>
+            </button>
+          </div>
+          <button
+            onClick={toggleDefense}
+            aria-pressed={hasOpp}
+            className={`mt-1.5 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border px-3 text-[12.5px] font-semibold ${
+              hasOpp ? 'border-accent bg-accent-soft text-accent' : 'border-line bg-card text-ink'
+            }`}
+          >
+            <Icon d={IC_SHIELD} className="h-4 w-4" />
+            {hasOpp ? 'Abwehr 6:0 entfernen' : 'Abwehr 6:0 aufstellen'}
+          </button>
+        </div>
+
+        <div>
+          <p className="mb-1.5 px-1 font-display text-[11px] font-bold uppercase tracking-wide text-muted">
+            Material — antippen oder aufs Feld ziehen
+          </p>
+          <div className="grid grid-cols-3 gap-1.5">
+            {MATERIAL_KINDS.map((k) => (
+              <button
+                key={k}
+                onPointerDown={matPointerDown(k)}
+                onPointerMove={matPointerMove}
+                onPointerUp={matPointerEnd}
+                onPointerCancel={matPointerEnd}
+                style={{ touchAction: 'none' }}
+                className="flex min-h-[64px] flex-col items-center justify-center gap-1 rounded-xl border border-line bg-card px-1 py-1.5 text-[10px] font-semibold text-muted active:border-accent"
+              >
+                <svg viewBox="-2 -2 4 4" className="h-6 w-6" aria-hidden="true">
+                  <MatGlyph kind={k} />
+                </svg>
+                {MATERIAL_LABEL[k]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-1.5 px-1 font-display text-[11px] font-bold uppercase tracking-wide text-muted">Mehr</p>
+          <div className="flex flex-col gap-1.5">
+            {(
+              [
+                [IC_BOOK, 'Bibliothek', () => setSheetView('bibliothek')],
+                [IC_SHARE, 'Teilen', () => { setShareMsg(null); setSheetView('teilen') }],
+                [IC_PALETTE, 'Feldfarben', () => setSheetView('farben')],
+                [IC_PLUS, 'Neuer Zug', () => setSheetView('new')],
+              ] as [string, string, () => void][]
+            ).map(([d, label, action]) => (
+              <button
+                key={label}
+                onClick={() => {
+                  setToolsOpen(false)
+                  action()
+                }}
+                className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-line bg-card px-3 text-left text-[13px] font-semibold text-ink active:border-accent"
+              >
+                <Icon d={d} className="h-4.5 w-4.5 text-accent" />
+                <span className="flex-1">{label}</span>
+                <Icon d={IC_CHEV} className="h-4 w-4 text-muted" />
+              </button>
+            ))}
+          </div>
+        </div>
+      </aside>
+
       {/* Sheets */}
       <BoardsSheet
         open={sheetView === 'boards'}
@@ -1354,52 +1695,6 @@ export default function TaktikScreen() {
         onDelete={deleteBoard}
         onNew={() => setSheetView('new')}
       />
-      <Sheet open={sheetView === 'figur'} onClose={() => setSheetView(null)} title="Figur hinzufügen">
-        <div className="flex flex-col gap-2">
-          <button
-            onClick={() => addFigure('own')}
-            className="flex items-center gap-3 rounded-xl border border-line bg-card-2 px-3 py-3 text-left active:border-accent"
-          >
-            <svg viewBox="0 0 24 24" className="h-8 w-8 flex-none" aria-hidden="true">
-              <circle cx="12" cy="12" r="9" fill="#ffffff" stroke="var(--club-700)" strokeWidth="2" />
-            </svg>
-            <span>
-              <p className="font-display text-[14px] font-bold uppercase tracking-wide text-ink">Eigene Spielerin</p>
-              <p className="mt-0.5 text-[12px] text-muted">Kürzel wird automatisch vergeben</p>
-            </span>
-          </button>
-          <button
-            onClick={() => addFigure('opp')}
-            className="flex items-center gap-3 rounded-xl border border-line bg-card-2 px-3 py-3 text-left active:border-accent"
-          >
-            <svg viewBox="0 0 24 24" className="h-8 w-8 flex-none" aria-hidden="true">
-              <circle cx="12" cy="12" r="9" fill="#272c35" stroke="rgba(255,255,255,0.7)" strokeWidth="1.5" />
-            </svg>
-            <span>
-              <p className="font-display text-[14px] font-bold uppercase tracking-wide text-ink">Abwehrspielerin</p>
-              <p className="mt-0.5 text-[12px] text-muted">Dunkler Chip, fortlaufend nummeriert</p>
-            </span>
-          </button>
-          <button
-            onClick={() => addFigure('ball')}
-            disabled={hasBall}
-            className="flex items-center gap-3 rounded-xl border border-line bg-card-2 px-3 py-3 text-left active:border-accent disabled:opacity-40"
-          >
-            <svg viewBox="0 0 24 24" className="h-8 w-8 flex-none" aria-hidden="true">
-              <circle cx="12" cy="12" r="7" fill="var(--club-acc)" stroke="var(--club-acc-ink)" strokeWidth="1" />
-            </svg>
-            <span>
-              <p className="font-display text-[14px] font-bold uppercase tracking-wide text-ink">Ball</p>
-              <p className="mt-0.5 text-[12px] text-muted">
-                {hasBall ? 'Liegt schon auf dem Feld' : 'Gelber Ball für Passwege'}
-              </p>
-            </span>
-          </button>
-          <p className="px-1 text-[11.5px] text-muted">
-            Entfernen: Figur auf dem Feld antippen → „Vom Feld entfernen“.
-          </p>
-        </div>
-      </Sheet>
       <Sheet open={sheetView === 'teilen'} onClose={() => setSheetView(null)} title="Zug teilen">
         <div className="flex flex-col gap-2">
           <Button onClick={() => void shareLink()} disabled={shareBusy}>

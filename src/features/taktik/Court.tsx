@@ -13,8 +13,15 @@ import { FIELD_H, FIELD_W } from './presets'
  * --court, --court-area, --court-lines vom Screen und sind einstellbar.
  */
 
-const VIEWBOX_FULL = '-1.1 -1.7 22.2 43.4'
-const VIEWBOX_HALF = '-1.1 -1.7 22.2 22.6'
+/** ViewBox-Maße — auch für die 3D-Ebene (HTML-Overlay) relevant. */
+export const VIEW_W = 22.2
+export const VIEW_H_FULL = 43.4
+export const VIEW_H_HALF = 22.6
+export const VIEW_PAD_X = 1.1
+export const VIEW_PAD_Y = 1.7
+
+const VIEWBOX_FULL = `-${VIEW_PAD_X} -${VIEW_PAD_Y} ${VIEW_W} ${VIEW_H_FULL}`
+const VIEWBOX_HALF = `-${VIEW_PAD_X} -${VIEW_PAD_Y} ${VIEW_W} ${VIEW_H_HALF}`
 
 const LINE = {
   stroke: 'var(--court-lines)',
@@ -269,6 +276,7 @@ export default function Court({
   ghost,
   svgRef,
   registerTokenEl,
+  hideFigures = false,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -284,6 +292,8 @@ export default function Court({
   ghost: { kind: MaterialKind; x: number; y: number } | null
   svgRef: Ref<SVGSVGElement>
   registerTokenEl: (id: string) => (el: SVGGElement | null) => void
+  /** 3D-Ansicht: Figuren/Material im SVG verstecken — sie stehen dann als Aufsteller im Raum. */
+  hideFigures?: boolean
   onPointerDown: PointerEventHandler<SVGSVGElement>
   onPointerMove: PointerEventHandler<SVGSVGElement>
   onPointerUp: PointerEventHandler<SVGSVGElement>
@@ -312,7 +322,7 @@ export default function Court({
         ))}
       </g>
       {/* Trainingsmaterial (wird nie animiert) */}
-      <g>
+      <g data-hide3d="" style={hideFigures ? { visibility: 'hidden' } : undefined}>
         {materials.map((m) => (
           <g
             key={m.id}
@@ -326,7 +336,7 @@ export default function Court({
         ))}
       </g>
       {/* Figuren */}
-      <g>
+      <g data-hide3d="" style={hideFigures ? { visibility: 'hidden' } : undefined}>
         {tokens.map((t) => (
           <TokenG
             key={t.id}

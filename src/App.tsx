@@ -20,9 +20,9 @@ export default function App() {
         <div className="grid h-8 w-8 flex-none place-items-center rounded-lg bg-club-acc font-display text-[13px] font-bold text-club-acc-ink">
           T
         </div>
-        <p className="truncate font-display text-[16px] font-bold uppercase tracking-wide text-club-on">
+        <h1 className="truncate font-display text-[16px] font-bold uppercase tracking-wide text-club-on">
           Taktikboard
-        </p>
+        </h1>
       </header>
 
       <main
