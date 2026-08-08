@@ -37,6 +37,7 @@ import {
 } from '../../lib/share'
 import type { LibraryCategory, LibraryEntry } from './library'
 import {
+  easeInOut,
   ensureSteps,
   positionInStep,
   positionsAtProgress,
@@ -675,6 +676,36 @@ export default function TaktikScreen() {
   orbitRef.current = orbit
   const orbitPtrs = useRef(new Map<number, { x: number; y: number }>())
   const pinchStart = useRef<{ dist: number; zoom: number } | null>(null)
+  const [orbitEl, setOrbitEl] = useState<HTMLDivElement | null>(null)
+
+  // In 3D scrollt die Seite nicht mit — Drehen/Zoomen soll die einzige Geste sein
+  useEffect(() => {
+    const scroller = document.getElementById('app-scroll')
+    if (!scroller) return
+    if (view3d) {
+      const prev = scroller.style.overflow
+      scroller.style.overflow = 'hidden'
+      scroller.style.overscrollBehavior = 'none'
+      return () => {
+        scroller.style.overflow = prev
+        scroller.style.overscrollBehavior = ''
+      }
+    }
+  }, [view3d])
+
+  // Wheel-Zoom nicht-passiv registrieren, sonst scrollt die Seite mit
+  useEffect(() => {
+    if (!orbitEl) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      setOrbit((o) => ({
+        ...o,
+        zoom: Math.min(2.4, Math.max(0.6, o.zoom * (e.deltaY > 0 ? 0.92 : 1.08))),
+      }))
+    }
+    orbitEl.addEventListener('wheel', onWheel, { passive: false })
+    return () => orbitEl.removeEventListener('wheel', onWheel)
+  }, [orbitEl])
 
   const svgRef = useRef<SVGSVGElement | null>(null)
   const rafRef = useRef<number | null>(null)
@@ -814,25 +845,63 @@ export default function TaktikScreen() {
 
   const steps = board?.steps ?? []
 
-  /** Board-Zustand auf Schritt k stellen (Figuren-Positionen aktualisieren). */
+  /** Dauer der animierten Schritt-Navigation (ms). */
+  const STEP_NAV_MS = 450
+
+  /**
+   * Board-Zustand auf Schritt k stellen. Standard: Figuren gleiten animiert
+   * an ihre neuen Positionen (statt zu springen); animate=false springt sofort
+   * (Abspiel-Start/-Ende, reduzierte Bewegung).
+   */
   const applyStep = useCallback(
-    (k: number) => {
+    (k: number, animate = true) => {
       stopPlay()
       setStepMode(0)
       setPopover(null)
       setCurStep(k)
-      setBoard((b) => {
-        if (!b) return b
-        return {
-          ...b,
-          tokens: b.tokens.map((t) => {
-            const p = positionInStep(b.steps, k, t.id, { x: t.x, y: t.y })
-            return { ...t, x: p.x, y: p.y }
-          }),
+      const commit = () =>
+        setBoard((b) => {
+          if (!b) return b
+          return {
+            ...b,
+            tokens: b.tokens.map((t) => {
+              const p = positionInStep(b.steps, k, t.id, { x: t.x, y: t.y })
+              return { ...t, x: p.x, y: p.y }
+            }),
+          }
+        })
+      const b = boardRef.current
+      if (!animate || reducedMotion || !b) {
+        commit()
+        return
+      }
+      const moves = b.tokens
+        .map((t) => {
+          const to = positionInStep(b.steps, k, t.id, { x: t.x, y: t.y })
+          return { id: t.id, from: { x: t.x, y: t.y }, to }
+        })
+        .filter((m) => Math.hypot(m.to.x - m.from.x, m.to.y - m.from.y) > 0.001)
+      if (moves.length === 0) {
+        commit()
+        return
+      }
+      const t0 = performance.now()
+      const frame = (now: number) => {
+        const u = Math.min(1, (now - t0) / STEP_NAV_MS)
+        const e = easeInOut(u)
+        for (const m of moves) {
+          setTokenTransform(m.id, m.from.x + (m.to.x - m.from.x) * e, m.from.y + (m.to.y - m.from.y) * e)
         }
-      })
+        if (u < 1) {
+          rafRef.current = requestAnimationFrame(frame)
+        } else {
+          rafRef.current = null
+          commit()
+        }
+      }
+      rafRef.current = requestAnimationFrame(frame)
     },
-    [stopPlay],
+    [stopPlay, reducedMotion, setTokenTransform],
   )
 
   const addStep = () => {
@@ -904,7 +973,7 @@ export default function TaktikScreen() {
     if (playing) {
       // Stopp: Abspielen abbrechen, zurück in die Grundstellung
       stopPlay()
-      applyStep(0)
+      applyStep(0, false)
       return
     }
     if (reducedMotion) {
@@ -915,7 +984,7 @@ export default function TaktikScreen() {
       return
     }
     stopPlay()
-    applyStep(0)
+    applyStep(0, false)
     const dur = (b.steps.length - 1) * SEGMENT_MS
     setPlaying(true)
     const t0 = performance.now()
@@ -927,7 +996,7 @@ export default function TaktikScreen() {
       } else {
         rafRef.current = null
         setPlaying(false)
-        applyStep(b.steps.length - 1)
+        applyStep(b.steps.length - 1, false)
       }
     }
     rafRef.current = requestAnimationFrame(frame)
@@ -1474,20 +1543,15 @@ export default function TaktikScreen() {
       {/* Orbit-Fläche über dem Feld (nur 3D) */}
       {view3d && (
         <div
+          ref={setOrbitEl}
           className="absolute inset-0"
           role="application"
           aria-label="3D-Ansicht — Ziehen dreht das Feld, Kneifen zoomt"
-          style={{ touchAction: 'none', cursor: 'grab' }}
+          style={{ touchAction: 'none', cursor: 'grab', overscrollBehavior: 'none' }}
           onPointerDown={orbitDown}
           onPointerMove={orbitMove}
           onPointerUp={orbitEnd}
           onPointerCancel={orbitEnd}
-          onWheel={(e) => {
-            setOrbit((o) => ({
-              ...o,
-              zoom: Math.min(2.4, Math.max(0.6, o.zoom * (e.deltaY > 0 ? 0.92 : 1.08))),
-            }))
-          }}
         />
       )}
       {/* Overlay-Knöpfe */}
