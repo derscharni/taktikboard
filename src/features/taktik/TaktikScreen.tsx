@@ -54,7 +54,7 @@ import { clampNorm, svgPointNorm, useBoardDrag } from './useBoardDrag'
 const HINT_DEFAULT =
   'Stell die Figuren für Schritt 1 auf. „+“ legt den nächsten Schritt an — verschieb dann die Figuren an ihre Ziele. Figuren, Material & mehr findest du unter „Werkzeuge“.'
 const HINT_3D =
-  '3D-Ansicht: Ziehen dreht das Feld, Kneifen oder Scrollen zoomt. Zum Bearbeiten zurück auf „2D“.'
+  'Diorama: Ziehen dreht rundherum, Kneifen oder Scrollen zoomt. Abspielen unten — bearbeitet wird in der 2D-Ansicht.'
 
 /** Dauer eines Schritt-Übergangs beim Abspielen (ms). */
 const SEGMENT_MS = 1400
@@ -80,6 +80,7 @@ const IC_SHIELD = 'M12 3l7 2.5V11c0 4.5-3 7.6-7 9.5-4-1.9-7-5-7-9.5V5.5Z'
 const IC_TOOLS = 'M4 6.5h9M17 6.5h3M13 4v5M4 12h3M11 12h9M7 9.5v5M4 17.5h11M19 17.5h1M15 15v5'
 const IC_CHEV = 'M9.5 6l6 6-6 6'
 const IC_PLAY = 'M8 5.5v13l10-6.5Z'
+const IC_STOP = 'M7.5 7.5h9v9h-9Z'
 const IC_PLUS = 'M12 5v14M5 12h14'
 const IC_TRASH = 'M5 7h14M9.5 7V4.5h5V7M7 7l1 13h8l1-13'
 const IC_BOOKMARK = 'M7 4h10v16l-5-3.5L7 20Z'
@@ -137,6 +138,8 @@ function Standee({
   chipRef,
   shadowRef,
   shadowScale = 0.92,
+  lift = 0,
+  tilt = 0,
   children,
 }: {
   left: string
@@ -149,6 +152,10 @@ function Standee({
   shadowRef?: (el: HTMLDivElement | null) => void
   /** Schattenbreite relativ zur Figurbreite. */
   shadowScale?: number
+  /** Schwebehöhe über dem Boden (px auf der Ebene). */
+  lift?: number
+  /** Rest-Neigung: 0 = exakt zur Kamera, >0 lässt etwas Draufsicht zu (wirkt plastischer). */
+  tilt?: number
   children: ReactNode
 }) {
   const transition = animate ? 'transform 320ms ease, left 320ms ease, top 320ms ease' : undefined
@@ -166,11 +173,11 @@ function Standee({
           height: size * 0.3,
           transform: 'translate(-50%, -50%)',
           borderRadius: '50%',
-          background: 'radial-gradient(closest-side, rgba(6,9,14,0.42), rgba(6,9,14,0) 78%)',
+          background: `radial-gradient(closest-side, rgba(6,9,14,${lift > 0 ? 0.34 : 0.42}), rgba(6,9,14,0) 78%)`,
           transition,
         }}
       />
-      {/* Aufsteller: Gegenrotation zur Feldneigung — steht senkrecht zur Kamera */}
+      {/* Figur: Gegenrotation zur Feldneigung, schwebt leicht über der Ebene */}
       <div
         ref={chipRef}
         style={{
@@ -180,13 +187,41 @@ function Standee({
           width: size,
           height: size,
           transformOrigin: '50% 100%',
-          transform: `translate(-50%, -100%) rotateZ(${-rz}deg) rotateX(${-rx}deg)`,
+          transform: `translate(-50%, -100%) translateZ(${lift}px) rotateZ(${-rz}deg) rotateX(${-(rx - tilt)}deg)`,
           transition,
         }}
       >
         {children}
       </div>
     </>
+  )
+}
+
+/** Diorama-Sockel: gibt der Feld-Ebene sichtbare Dicke (4 Seitenwände + Bodenschatten). */
+function Slab({ w, h, t, court }: { w: number; h: number; t: number; court: string }) {
+  const side = (extra: CSSProperties, shade: number): CSSProperties => ({
+    position: 'absolute',
+    background: `color-mix(in srgb, ${court} ${shade}%, #0a0d13)`,
+    boxShadow: 'inset 0 1.5px 0 rgba(255,255,255,0.18)',
+    ...extra,
+  })
+  return (
+    <div aria-hidden="true" className="pointer-events-none absolute inset-0" style={{ transformStyle: 'preserve-3d' }}>
+      {/* weicher Schlagschatten unter dem Sockel */}
+      <div
+        style={{
+          position: 'absolute',
+          inset: '-5%',
+          transform: `translateZ(${-t - 1}px)`,
+          background: 'radial-gradient(closest-side, rgba(0,0,0,0.5), rgba(0,0,0,0) 82%)',
+        }}
+      />
+      {/* Nord / Süd / West / Ost — Wände klappen von der Kante nach unten */}
+      <div style={side({ left: 0, top: 0, width: w, height: t, transformOrigin: '50% 0', transform: 'rotateX(-90deg)' }, 52)} />
+      <div style={side({ left: 0, top: '100%', width: w, height: t, transformOrigin: '50% 0', transform: 'rotateX(-90deg)' }, 34)} />
+      <div style={side({ left: 0, top: 0, width: t, height: h, transformOrigin: '0 50%', transform: 'rotateY(90deg)' }, 46)} />
+      <div style={side({ left: '100%', top: 0, width: t, height: h, transformOrigin: '0 50%', transform: 'rotateY(90deg)' }, 28)} />
+    </div>
   )
 }
 
@@ -223,8 +258,13 @@ function Layer3D({
       {materials.map((m) => {
         const p = planePct(m.x, m.y, vbH)
         return (
-          <Standee key={m.id} {...p} size={matPx} rx={rx} rz={rz} animate={animate} shadowScale={0.72}>
-            <svg viewBox="-2 -2 4 4" width={matPx} height={matPx} style={{ display: 'block' }}>
+          <Standee key={m.id} {...p} size={matPx} rx={rx} rz={rz} animate={animate} shadowScale={0.72} tilt={4}>
+            <svg
+              viewBox="-2 -2 4 4"
+              width={matPx}
+              height={matPx}
+              style={{ display: 'block', filter: 'drop-shadow(0 1.5px 1.5px rgba(6,9,14,0.35))' }}
+            >
               <MatGlyph kind={m.kind} />
             </svg>
           </Standee>
@@ -243,6 +283,8 @@ function Layer3D({
             rx={rx}
             rz={rz}
             animate={animate}
+            lift={isBall ? size * 0.22 : size * 0.16}
+            tilt={isBall ? 0 : 10}
             chipRef={register(t.id, 'chip')}
             shadowRef={register(t.id, 'shadow')}
           >
@@ -257,22 +299,33 @@ function Layer3D({
                 fontWeight: 800,
                 fontSize: size * 0.36,
                 lineHeight: 1,
-                boxShadow: '0 2px 7px rgba(6,9,14,0.4)',
                 ...(isBall
                   ? {
-                      background: 'var(--club-acc)',
-                      border: `${Math.max(1.5, border * 0.6)}px solid color-mix(in srgb, var(--club-acc-ink) 55%, transparent)`,
+                      // Kugel-Look: Glanzpunkt oben links, Abdunklung zum Rand
+                      backgroundColor: 'var(--club-acc)',
+                      backgroundImage:
+                        'radial-gradient(circle at 33% 28%, #ffe9a3 0%, var(--club-acc) 52%, color-mix(in srgb, var(--club-acc) 55%, #6b4d00) 100%)',
+                      border: `${Math.max(1, border * 0.4)}px solid color-mix(in srgb, var(--club-acc-ink) 45%, transparent)`,
+                      boxShadow: '0 2px 6px rgba(6,9,14,0.45)',
                     }
                   : isOpp
                     ? {
-                        background: '#272c35',
+                        backgroundColor: '#272c35',
+                        backgroundImage:
+                          'radial-gradient(circle at 34% 26%, #3a4150 0%, #272c35 58%, #171b22 100%)',
                         border: `${border * 0.75}px solid rgba(255,255,255,0.65)`,
                         color: '#f0f2f5',
+                        boxShadow:
+                          'inset 0 1.5px 2px rgba(255,255,255,0.22), inset 0 -2px 4px rgba(0,0,0,0.5), 0 2.5px 8px rgba(6,9,14,0.45)',
                       }
                     : {
-                        background: '#ffffff',
+                        backgroundColor: '#f6f8fc',
+                        backgroundImage:
+                          'radial-gradient(circle at 34% 26%, #ffffff 0%, #f6f8fc 58%, #d9dfeb 100%)',
                         border: `${border}px solid var(--club-700)`,
                         color: 'var(--club-700)',
+                        boxShadow:
+                          'inset 0 1.5px 2px rgba(255,255,255,0.9), inset 0 -2.5px 5px rgba(20,40,80,0.28), 0 2.5px 8px rgba(6,9,14,0.45)',
                       }),
               }}
             >
@@ -800,6 +853,12 @@ export default function TaktikScreen() {
     if (!b || b.steps.length < 2) return
     setPopover(null)
     setSelectedId(null)
+    if (playing) {
+      // Stopp: Abspielen abbrechen, zurück in die Grundstellung
+      stopPlay()
+      applyStep(0)
+      return
+    }
     if (reducedMotion) {
       // Reduzierte Bewegung: Schritt für Schritt springen statt animieren
       const next = stepMode >= b.steps.length - 1 ? 0 : stepMode + 1
@@ -1168,7 +1227,7 @@ export default function TaktikScreen() {
     const dx = cur.x - prev.x
     const dy = cur.y - prev.y
     setOrbit((o) => ({
-      rx: Math.min(80, Math.max(15, o.rx - dy * 0.3)),
+      rx: Math.min(85, Math.max(8, o.rx - dy * 0.3)),
       rz: o.rz + dx * 0.4,
       zoom: o.zoom,
     }))
@@ -1274,7 +1333,7 @@ export default function TaktikScreen() {
       ? 'Schritt'
       : `Schritt ${stepMode + 1}/${steps.length}`
     : playing
-      ? 'Läuft …'
+      ? 'Stopp'
       : 'Abspielen'
 
   // Pfeile: aktueller Schritt → nächster Schritt (nicht während des Abspielens)
@@ -1299,6 +1358,7 @@ export default function TaktikScreen() {
   const planeH = planeW > 0 ? (planeW * vbH) / VIEW_W : 0
   const chipPx = planeW * (2.24 / VIEW_W)
   const ballPx = planeW * (1.3 / VIEW_W)
+  const slabT = Math.min(22, Math.max(10, planeW * 0.05))
   const orbitActive = orbitPtrs.current.size > 0
 
   const boardArea = (
@@ -1311,7 +1371,8 @@ export default function TaktikScreen() {
         ...(present
           ? {}
           : {
-              height: 'calc(100dvh - 356px)',
+              // 3D hat weniger UI drumherum — das Diorama bekommt mehr Höhe
+              height: view3d ? 'calc(100dvh - 304px)' : 'calc(100dvh - 356px)',
               minHeight: 300,
               maxHeight: 720,
             }),
@@ -1346,6 +1407,7 @@ export default function TaktikScreen() {
             hideFigures={view3d}
             {...dragHandlers}
           />
+          {view3d && planeW > 0 && <Slab w={planeW} h={planeH} t={slabT} court={fieldColors.court} />}
           {view3d && planeW > 0 && (
             <Layer3D
               tokens={board.tokens}
@@ -1424,14 +1486,16 @@ export default function TaktikScreen() {
             {i + 1}
           </button>
         ))}
-        <button
-          aria-label="Neuen Schritt hinzufügen"
-          onClick={addStep}
-          className="grid h-11 w-11 flex-none place-items-center rounded-full border border-dashed border-accent text-accent active:bg-accent-soft"
-        >
-          <Icon d={IC_PLUS} className="h-4 w-4" />
-        </button>
-        {steps.length > 1 && (
+        {!view3d && (
+          <button
+            aria-label="Neuen Schritt hinzufügen"
+            onClick={addStep}
+            className="grid h-11 w-11 flex-none place-items-center rounded-full border border-dashed border-accent text-accent active:bg-accent-soft"
+          >
+            <Icon d={IC_PLUS} className="h-4 w-4" />
+          </button>
+        )}
+        {!view3d && steps.length > 1 && (
           <button
             aria-label={deleteArmed ? `Schritt ${curStep + 1} wirklich löschen` : `Schritt ${curStep + 1} löschen`}
             onClick={() => {
@@ -1452,9 +1516,13 @@ export default function TaktikScreen() {
         onClick={onPlayPress}
         disabled={steps.length < 2}
         className="flex-none px-3"
-        aria-label="Spielzug abspielen — Bewegung zwischen den Schritten wird automatisch ergänzt"
+        aria-label={
+          playing
+            ? 'Abspielen stoppen'
+            : 'Spielzug abspielen — Bewegung zwischen den Schritten wird automatisch ergänzt'
+        }
       >
-        <Icon d={IC_PLAY} className="h-4 w-4" />
+        <Icon d={playing ? IC_STOP : IC_PLAY} className="h-4 w-4" />
         {playLabel}
       </Button>
     </div>
@@ -1463,7 +1531,7 @@ export default function TaktikScreen() {
   return (
     <div className={present ? undefined : 'flex flex-col'}>
       {/* Kopfzeile: Titel (inline editierbar) + Meine Züge */}
-      {!present && (
+      {!present && !view3d && (
         <div className="flex items-center gap-2">
           <input
             value={board.title}
@@ -1482,8 +1550,24 @@ export default function TaktikScreen() {
         </div>
       )}
 
+      {/* 3D: reduzierte Leiste — nur zurück zum Bearbeiten + Titel */}
+      {!present && view3d && (
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setView3d(false)}
+            className="inline-flex min-h-11 flex-none items-center gap-1.5 rounded-xl bg-accent-soft px-3 font-display text-[12px] font-bold uppercase tracking-wide text-accent active:opacity-80"
+          >
+            <Icon d={IC_CUBE} className="h-4 w-4" />
+            2D · Bearbeiten
+          </button>
+          <p className="min-w-0 flex-1 truncate text-right font-display text-[14px] font-bold uppercase tracking-wide text-muted">
+            {board.title || 'Spielzug'}
+          </p>
+        </div>
+      )}
+
       {/* Werkzeugleiste: Feldwahl + 3D links, Werkzeuge-Panel rechts */}
-      {!present && (
+      {!present && !view3d && (
         <div className="mt-2 flex items-center gap-2">
           <div className="w-30 flex-none">
             <Segmented<'full' | 'half'>
@@ -1495,7 +1579,16 @@ export default function TaktikScreen() {
               onChange={setField}
             />
           </div>
-          <Chip pressed={view3d} onClick={() => setView3d((v) => !v)} ariaLabel="3D-Diorama-Ansicht umschalten">
+          <Chip
+            pressed={view3d}
+            onClick={() => {
+              setToolsOpen(false)
+              setPopover(null)
+              setSelectedId(null)
+              setView3d((v) => !v)
+            }}
+            ariaLabel="3D-Diorama-Ansicht umschalten"
+          >
             <Icon d={IC_CUBE} /> {view3d ? '2D' : '3D'}
           </Chip>
           <div className="min-w-0 flex-1" />
@@ -1564,16 +1657,19 @@ export default function TaktikScreen() {
         aria-label="Werkzeuge schließen"
         tabIndex={toolsOpen ? 0 : -1}
         onClick={() => setToolsOpen(false)}
-        className={`fixed inset-0 z-40 bg-black/35 transition-opacity duration-200 ${
+        className={`fixed inset-0 z-40 bg-black/20 transition-opacity duration-200 ${
           toolsOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
         }`}
       />
+      {/* Mobil: halbhohes Bottom-Sheet (Feld bleibt sichtbar zum Reinziehen) — ab lg: Seitenleiste rechts */}
       <aside
         role="dialog"
         aria-label="Werkzeuge"
         inert={!toolsOpen}
-        className={`fixed bottom-0 right-0 top-0 z-50 flex w-[300px] max-w-[86vw] flex-col gap-4 overflow-y-auto border-l border-line bg-bg p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] shadow-card transition-transform duration-200 ${
-          toolsOpen ? 'translate-x-0' : 'translate-x-full'
+        className={`fixed inset-x-0 bottom-0 z-50 flex max-h-[54dvh] flex-col gap-4 overflow-y-auto rounded-t-3xl border-t border-line bg-bg p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-card transition-transform duration-200 lg:inset-x-auto lg:right-0 lg:top-0 lg:max-h-none lg:w-[300px] lg:rounded-none lg:border-l lg:border-t-0 lg:pt-[max(1rem,env(safe-area-inset-top))] ${
+          toolsOpen
+            ? 'translate-x-0 translate-y-0'
+            : 'translate-y-full lg:translate-x-full lg:translate-y-0'
         }`}
       >
         <div className="flex items-center justify-between">
